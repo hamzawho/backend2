@@ -4,9 +4,11 @@ const mysql = require('mysql');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer'); // Import multer
+const fs = require('fs'); // Required for saving images to the filesystem
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
 const app = express();
 
 app.use(cors({ origin: '*' }));
@@ -16,12 +18,14 @@ app.use(express.json());
 const storage = multer.memoryStorage(); // Store files in memory
 const upload = multer({ storage: storage });
 
+// MySQL database connection
 const db = mysql.createConnection({
   user: 'root',
-  password: 'hamza', 
-  database: 'rockhairsaloon' 
+  password: 'hamza',
+  database: 'rockhairsaloon',
 });
 
+// Connect to the database
 db.connect((err) => {
   if (err) {
     console.error('Error connecting to database:', err);
@@ -30,13 +34,15 @@ db.connect((err) => {
   console.log('Connected to database!');
 });
 
+// Function to generate JWT token
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '1h' });
 };
 
+// Middleware to authenticate JWT token
 const authenticate = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
-  
+
   if (!token) return res.status(401).json({ message: 'No token provided' });
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
@@ -47,10 +53,11 @@ const authenticate = (req, res, next) => {
   });
 };
 
-// User Signup
+// User Signup Endpoint
 app.post('/signup', async (req, res) => {
   const { name, email, password } = req.body;
 
+  // Check if email already exists
   const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
   db.query(queryEmailExists, [email], async (err, results) => {
     if (results.length > 0) {
@@ -59,6 +66,7 @@ app.post('/signup', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Insert new user into the database
     const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
     db.query(query, [name, email, hashedPassword], (err, result) => {
       if (err) {
@@ -69,6 +77,7 @@ app.post('/signup', async (req, res) => {
   });
 });
 
+// User Login Endpoint
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -90,44 +99,62 @@ app.post('/login', async (req, res) => {
   });
 });
 
-// Upload Multiple Images for a User
-app.post('/upload-images', authenticate, upload.array('images', 10), (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ message: 'No images uploaded' });
+// Image Upload Endpoint
+app.post('/upload-image', authenticate, upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'No image uploaded' });
   }
 
-  const userId = req.userId;
+  // Save image path to the filesystem
+  const imagePath = `uploads/${Date.now()}_${req.file.originalname}`;
+  
+  // Save the image to the filesystem
+  fs.writeFileSync(imagePath, req.file.buffer);
 
-  const imageInserts = req.files.map(file => {
-    return [userId, file.buffer.toString('base64')];
-  });
-
-  const sql = 'INSERT INTO user_images (user_id, image) VALUES ?';
-  db.query(sql, [imageInserts], (err, result) => {
+  const sql = 'INSERT INTO user_images (user_id, image_path) VALUES (?, ?)';
+  db.query(sql, [req.userId, imagePath], (err) => {
     if (err) {
       return res.status(500).json({ message: 'Database error' });
     }
-    res.status(200).json({ message: 'Images uploaded successfully' });
+    res.status(200).json({ message: 'Image uploaded successfully', image: imagePath });
   });
 });
 
-// Fetch User's Images
+// Get User Images Endpoint
 app.get('/get-images', authenticate, (req, res) => {
   const userId = req.userId;
 
-  const sql = 'SELECT image FROM user_images WHERE user_id = ?';
+  const sql = 'SELECT * FROM user_images WHERE user_id = ? ORDER BY id DESC';
   db.query(sql, [userId], (err, data) => {
     if (err) {
       return res.status(500).json({ message: 'Database error' });
     }
 
-    const images = data.map(row => row.image);
-    res.json({ images });
+    const formattedImages = data.map(image => ({
+      id: image.id,
+      path: image.image_path,
+    }));
+
+    res.json(formattedImages);
   });
+});
+
+// Create user_images table if it doesn't exist
+const createImageTable = `CREATE TABLE IF NOT EXISTS user_images (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT,
+  image_path VARCHAR(255),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+)`;
+
+// Create the table when the server starts
+db.query(createImageTable, (err) => {
+  if (err) {
+    console.error('Error creating user_images table:', err);
+  }
 });
 
 // Start the server
 app.listen(8083, () => {
-  console.log('Server is running on port 8083');
+  console.log(`Server is running on port 8083`);
 });
-
