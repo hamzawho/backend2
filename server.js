@@ -3,7 +3,7 @@ const bcrypt = require('bcrypt');
 const mysql = require('mysql');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const multer = require('multer'); // Import multer
+const multer = require('multer');
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -11,23 +11,16 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 
 app.use(cors({ origin: '*' }));
-
-
-// app.use(cors({
-//   origin: 'http://thedemoapp.online'
-// }));
-
 app.use(express.json());
 
 // Set up multer for file uploads
-const storage = multer.memoryStorage(); // Store files in memory
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 const db = mysql.createConnection({
-  // host: 'localhost', 
   user: 'root',
-  password: 'hamza', 
-  database: 'rockhairsaloon' 
+  password: 'hamza',
+  database: 'rockhairsaloon'
 });
 
 db.connect((err) => {
@@ -50,7 +43,7 @@ const authenticate = (req, res, next) => {
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) return res.status(401).json({ message: 'Invalid token' });
 
-    req.userId = decoded.id; 
+    req.userId = decoded.id;
     next();
   });
 };
@@ -59,7 +52,6 @@ const authenticate = (req, res, next) => {
 app.post('/signup', async (req, res) => {
   const { name, email, password } = req.body;
 
-  // if email already exists
   const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
   db.query(queryEmailExists, [email], async (err, results) => {
     if (results.length > 0) {
@@ -68,7 +60,6 @@ app.post('/signup', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insert new user into the database
     const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
     db.query(query, [name, email, hashedPassword], (err, result) => {
       if (err) {
@@ -101,91 +92,45 @@ app.post('/login', async (req, res) => {
   });
 });
 
-// Save User Data Endpoint
-app.post('/saveuser', authenticate, (req, res) => {
-  const { name, age, Death } = req.body;
-  const userId = req.userId;
-
-  const sql = 'INSERT INTO user_data (user_id, name, age, Death) VALUES (?, ?, ?, ?)';
-  db.query(sql, [userId, name, age, Death], (err, results) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
-    res.status(200).json({ message: 'Data saved successfully' });
-  });
-});
-
-// Get User Data Endpoint
-app.get('/getusers', authenticate, (req, res) => {
-  const userId = req.userId;
-
-  const sql = 'SELECT * FROM user_data WHERE user_id = ? ORDER BY id DESC';
-  db.query(sql, [userId], (err, data) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
-
-    const formattedData = data.map(user => ({
-      id: user.id,
-      name: user.name,
-      age: user.age,
-      Death: new Date(user.Death).toISOString().split('T')[0]
-    }));
-
-    res.json(formattedData);
-  });
-});
-
-// Update User Data Endpoint
-app.put('/update', authenticate, (req, res) => {
-  const id = req.query.id;
-  const { name, age, Death } = req.body;
-
-  const sql = 'UPDATE user_data SET name=?, age=?, Death=? WHERE id=? AND user_id=?';
-  const values = [name, age, Death, id, req.userId];
-
-  db.query(sql, values, (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
-    if (result.affectedRows > 0) {
-      res.status(200).json({ message: 'Data updated successfully' });
-    } else {
-      res.status(404).json({ message: 'Data not found' });
-    }
-  });
-});
-
-// Delete User Data Endpoint
-app.delete('/delete', authenticate, (req, res) => {
-  const id = req.query.id;
-
-  const sql = 'DELETE FROM user_data WHERE id = ? AND user_id = ?';
-  db.query(sql, [id, req.userId], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
-    if (result.affectedRows > 0) {
-      res.status(200).json({ message: 'Data deleted successfully' });
-    } else {
-      res.status(404).json({ message: 'Data not found' });
-    }
-  });
-});
-
 // Image Upload Endpoint
 app.post('/upload-image', authenticate, upload.single('image'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'No image uploaded' });
   }
 
-  // Here you can save the image to the filesystem or database
-  const imageBuffer = req.file.buffer; // Get the image buffer
-  // For example, you can save it as a file (optional)
-  // const imagePath = `uploads/${req.file.originalname}`;
-  // fs.writeFileSync(imagePath, imageBuffer);
+  const userId = req.userId;
+  const imageBuffer = req.file.buffer; // Image stored as a buffer
 
-  res.status(200).json({ message: 'Image uploaded successfully', image: req.file.originalname });
+  // Insert image into the database
+  const sql = 'INSERT INTO user_images (user_id, image) VALUES (?, ?) ON DUPLICATE KEY UPDATE image = ?';
+  db.query(sql, [userId, imageBuffer, imageBuffer], (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
+    res.status(200).json({ message: 'Image uploaded successfully' });
+  });
+});
+
+// Get User Image Endpoint
+app.get('/get-image', authenticate, (req, res) => {
+  const userId = req.userId;
+
+  const sql = 'SELECT image FROM user_images WHERE user_id = ?';
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
+
+    if (results.length === 0 || !results[0].image) {
+      return res.status(404).json({ message: 'No image found for this user' });
+    }
+
+    const imageBuffer = results[0].image;
+
+    // Send back the image as a base64 encoded string
+    const base64Image = Buffer.from(imageBuffer).toString('base64');
+    res.status(200).json({ image: base64Image });
+  });
 });
 
 // Start the server
