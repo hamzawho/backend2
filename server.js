@@ -178,6 +178,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer'); // For handling file uploads
 const fs = require('fs'); // For saving images to the filesystem
+const path = require('path'); // For directory management
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
@@ -186,6 +187,12 @@ const app = express();
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+
+// Ensure the "uploads" directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
 
 // Set up multer for file uploads
 const storage = multer.memoryStorage(); // Store files in memory before saving to filesystem
@@ -273,7 +280,7 @@ app.post('/upload-images', authenticate, upload.array('images', 10), (req, res) 
   const savedImages = [];
 
   req.files.forEach((file) => {
-    const imagePath = `uploads/${Date.now()}_${file.originalname}`;
+    const imagePath = path.join(uploadsDir, `${Date.now()}_${file.originalname}`);
     fs.writeFileSync(imagePath, file.buffer); // Save image to filesystem
 
     // Save image path and user ID in the database
@@ -323,10 +330,11 @@ db.query(createImageTable, (err) => {
 });
 
 // Serve static files from the "uploads" directory to make images accessible via URL
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Start the server
 app.listen(8083, () => {
   console.log(`Server is running on port 8083`);
 });
+
 
