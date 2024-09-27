@@ -170,32 +170,38 @@
 
 
 
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const mysql = require('mysql');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const multer = require('multer'); // For handling file uploads
-const fs = require('fs'); // For saving images to the filesystem
-const path = require('path'); // For directory management
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
-
+const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// Ensure the "uploads" directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
+// Set up the uploads directory
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR);
 }
 
 // Set up multer for file uploads
-const storage = multer.memoryStorage(); // Store files in memory before saving to filesystem
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const filename = `${Date.now()}_${file.originalname}`;
+    cb(null, filename);
+  },
+});
 const upload = multer({ storage: storage });
 
 // MySQL database connection
@@ -235,6 +241,7 @@ const authenticate = (req, res, next) => {
 app.post('/signup', async (req, res) => {
   const { name, email, password } = req.body;
 
+  // Check if email already exists
   const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
   db.query(queryEmailExists, [email], async (err, results) => {
     if (results.length > 0) {
@@ -242,10 +249,11 @@ app.post('/signup', async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-
     const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
     db.query(query, [name, email, hashedPassword], (err, result) => {
-      if (err) return res.status(500).json({ message: 'Database error' });
+      if (err) {
+        return res.status(500).json({ message: 'Database error' });
+      }
       res.status(201).json({ message: 'User created successfully' });
     });
   });
@@ -263,7 +271,9 @@ app.post('/login', async (req, res) => {
 
     const user = results[0];
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
     const token = generateToken(user.id);
     res.json({ token });
@@ -271,70 +281,47 @@ app.post('/login', async (req, res) => {
 });
 
 // Image Upload Endpoint
-app.post('/upload-images', authenticate, upload.array('images', 10), (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ message: 'No images uploaded' });
+app.post('/upload-image', authenticate, upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'No image uploaded' });
   }
 
-  // Array to store paths of saved images
-  const savedImages = [];
+  const imagePath = `uploads/${req.file.filename}`;
 
-  req.files.forEach((file) => {
-    const imagePath = path.join(uploadsDir, `${Date.now()}_${file.originalname}`);
-    fs.writeFileSync(imagePath, file.buffer); // Save image to filesystem
-
-    // Save image path and user ID in the database
-    const sql = 'INSERT INTO user_images (user_id, image_path) VALUES (?, ?)';
-    db.query(sql, [req.userId, imagePath], (err) => {
-      if (err) {
-        return res.status(500).json({ message: 'Database error' });
-      }
-    });
-
-    savedImages.push(imagePath);
+  const sql = 'INSERT INTO user_images (user_id, image_path) VALUES (?, ?)';
+  db.query(sql, [req.userId, imagePath], (err) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
+    res.status(200).json({ message: 'Image uploaded successfully', image: imagePath });
   });
-
-  res.status(200).json({ message: 'Images uploaded successfully', images: savedImages });
 });
 
 // Get User Images Endpoint
 app.get('/get-images', authenticate, (req, res) => {
   const userId = req.userId;
-
   const sql = 'SELECT * FROM user_images WHERE user_id = ? ORDER BY id DESC';
   db.query(sql, [userId], (err, data) => {
-    if (err) return res.status(500).json({ message: 'Database error' });
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
 
-    const formattedImages = data.map((image) => ({
+    const formattedImages = data.map(image => ({
       id: image.id,
       path: image.image_path,
     }));
 
-    res.json({ images: formattedImages });
+    res.json(formattedImages);
   });
 });
 
-// Create user_images table if it doesn't exist
-const createImageTable = `CREATE TABLE IF NOT EXISTS user_images (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT,
-  image_path VARCHAR(255),
-  FOREIGN KEY (user_id) REFERENCES users(id)
-)`;
-
-// Create the table when the server starts
-db.query(createImageTable, (err) => {
-  if (err) {
-    console.error('Error creating user_images table:', err);
-  }
-});
-
-// Serve static files from the "uploads" directory to make images accessible via URL
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve static files from the uploads directory
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Start the server
 app.listen(8083, () => {
   console.log(`Server is running on port 8083`);
 });
+
 
 
