@@ -5,6 +5,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const fs = require('fs');
+const sharp = require('sharp'); // Import sharp for image processing
 const path = require('path');
 require('dotenv').config();
 
