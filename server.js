@@ -13,7 +13,7 @@ const app = express();
 
 // app.use(cors({ origin: '*' }));
 app.use(cors({
-  origin: 'https://thedemoapp.online'
+  origin: 'http://thedemoapp.online'
 }));
 
 app.use(express.json());
