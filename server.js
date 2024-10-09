@@ -186,35 +186,45 @@
 // });
 
 
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const mysql = require('mysql');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const multerS3 = require('multer-s3');
-const AWS = require('aws-sdk');
 const fs = require('fs');
 const path = require('path');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { Upload } = require('@aws-sdk/lib-storage');
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
+
+// app.use(cors({ origin: '*' }));
 
 app.use(cors({
   origin: 'http://thedemoapp.online'
 }));
 app.use(express.json());
 
-// Configure AWS S3
-AWS.config.update({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
+// Set up the uploads directory
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR);
+}
 
-const s3 = new AWS.S3();
+// Set up multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const filename = `${Date.now()}_${file.originalname}`;
+    cb(null, filename);
+  },
+});
+const upload = multer({ storage: storage });
 
 // MySQL database connection
 const db = mysql.createConnection({
@@ -249,16 +259,13 @@ const authenticate = (req, res, next) => {
   });
 };
 
-// Set up multer for S3 storage
-const upload = multer({
-  storage: multerS3({
-    s3: s3,
-    bucket: process.env.AWS_BUCKET_NAME,
-    acl: 'public-read', // Set permissions for the uploaded files
-    key: (req, file, cb) => {
-      cb(null, `${Date.now()}_${file.originalname}`);
-    },
-  }),
+// Create an S3 client
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
 });
 
 // User Signup Endpoint
@@ -305,20 +312,46 @@ app.post('/login', async (req, res) => {
 });
 
 // Image Upload Endpoint
-app.post('/upload-image', authenticate, upload.single('image'), (req, res) => {
+app.post('/upload-image', authenticate, upload.single('image'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'No image uploaded' });
   }
 
-  const imagePath = req.file.location; // S3 URL of the uploaded image
+  // Read the file buffer
+  const fileContent = fs.readFileSync(req.file.path);
+  
+  // Configure the upload parameters
+  const uploadParams = {
+    Bucket: process.env.AWS_BUCKET_NAME,
+    Key: `uploads/${req.file.filename}`, // The path you want to save the file to
+    Body: fileContent,
+    ContentType: req.file.mimetype, // Ensure you set the correct content type
+  };
 
-  const sql = 'INSERT INTO user_images (user_id, image_path) VALUES (?, ?)';
-  db.query(sql, [req.userId, imagePath], (err) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
-    res.status(200).json({ message: 'Image uploaded successfully', image: imagePath });
-  });
+  try {
+    // Use the Upload class to upload the file
+    const upload = new Upload({
+      client: s3Client,
+      params: uploadParams,
+    });
+    
+    await upload.done();
+
+    // Once uploaded, you can construct the image path
+    const imagePath = `https://${process.env.AWS_BUCKET_NAME}.s3.amazonaws.com/${uploadParams.Key}`;
+    
+    // Save the image path to the database
+    const sql = 'INSERT INTO user_images (user_id, image_path) VALUES (?, ?)';
+    db.query(sql, [req.userId, imagePath], (err) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error' });
+      }
+      res.status(200).json({ message: 'Image uploaded successfully', image: imagePath });
+    });
+  } catch (error) {
+    console.error('Error uploading image:', error); // Log the error
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
 // Get User Images Endpoint
@@ -350,33 +383,22 @@ app.delete('/delete-image/:id', authenticate, (req, res) => {
       return res.status(404).json({ message: 'Image not found' });
     }
 
-    const imagePath = results[0].image_path.split('/').pop(); // Get the filename for deletion
-    const deleteParams = {
-      Bucket: process.env.AWS_BUCKET_NAME,
-      Key: imagePath,
-    };
-
-    // Delete the image file from S3
-    s3.deleteObject(deleteParams, (err) => {
+    // Delete the image record from the database
+    const deleteImageQuery = 'DELETE FROM user_images WHERE id = ?';
+    db.query(deleteImageQuery, [imageId], (err) => {
       if (err) {
-        return res.status(500).json({ message: 'Error deleting image file from S3' });
+        return res.status(500).json({ message: 'Database error' });
       }
-
-      // Delete the image record from the database
-      const deleteImageQuery = 'DELETE FROM user_images WHERE id = ?';
-      db.query(deleteImageQuery, [imageId], (err) => {
-        if (err) {
-          return res.status(500).json({ message: 'Database error' });
-        }
-        res.status(200).json({ message: 'Image deleted successfully' });
-      });
+      res.status(200).json({ message: 'Image deleted successfully' });
     });
   });
 });
+
+// Serve static files from the uploads directory
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Start the server
 app.listen(8083, () => {
   console.log(`Server is running on port 8083`);
 });
-
 
