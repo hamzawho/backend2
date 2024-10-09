@@ -11,7 +11,11 @@ require('dotenv').config();
 const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 
-app.use(cors({ origin: '*' }));
+// app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: 'https://thedemoapp.online'
+}));
+
 app.use(express.json());
 
 // Set up the uploads directory
