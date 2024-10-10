@@ -47,10 +47,12 @@ db.connect((err) => {
   console.log('Connected to database!');
 });
 
+// Generate JWT token
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '1h' });
 };
 
+// Middleware to authenticate token
 const authenticate = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ message: 'No token provided' });
@@ -87,6 +89,48 @@ const uploadToS3 = async (fileContent, fileName, mimeType) => {
   await upload.done();
   return `https://${process.env.AWS_BUCKET_NAME}.s3.amazonaws.com/${uploadParams.Key}`;
 };
+
+// Signup endpoint
+app.post('/signup', async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
+  db.query(queryEmailExists, [email], async (err, results) => {
+    if (results.length > 0) {
+      return res.status(400).json({ message: 'Email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
+    db.query(query, [name, email, hashedPassword], (err, result) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error' });
+      }
+      res.status(201).json({ message: 'User created successfully' });
+    });
+  });
+});
+
+// Login endpoint
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  const query = 'SELECT * FROM users WHERE email = ?';
+  db.query(query, [email], async (err, results) => {
+    if (results.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const user = results[0];
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const token = generateToken(user.id);
+    res.json({ token });
+  });
+});
 
 // Image Upload Endpoint with Thumbnail Generation Using ImageMagick
 app.post('/upload-image', authenticate, upload.single('image'), async (req, res) => {
@@ -160,6 +204,7 @@ app.get('/get-images', authenticate, (req, res) => {
   });
 });
 
+// Delete Image Endpoint
 app.delete('/delete-image/:id', authenticate, (req, res) => {
   const imageId = req.params.id;
 
