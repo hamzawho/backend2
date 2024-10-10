@@ -215,8 +215,6 @@
 //   console.log(`Server is running on port 8083`);
 // });
 
-
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const mysql = require('mysql');
@@ -227,7 +225,7 @@ const fs = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
-const sharp = require('sharp'); // Image manipulation library
+const gm = require('gm').subClass({ imageMagick: true }); // GraphicsMagick with ImageMagick
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -347,7 +345,7 @@ const uploadToS3 = async (fileContent, fileName, mimeType) => {
   return `https://${process.env.AWS_BUCKET_NAME}.s3.amazonaws.com/${uploadParams.Key}`;
 };
 
-// Image Upload Endpoint with Thumbnail Generation
+// Image Upload Endpoint with Thumbnail Generation Using ImageMagick
 app.post('/upload-image', authenticate, upload.single('image'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'No image uploaded' });
@@ -362,32 +360,42 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
     const originalImageContent = fs.readFileSync(originalFilePath);
     const originalImagePath = await uploadToS3(originalImageContent, originalFileName, mimeType);
 
-    // 2. Generate a thumbnail using sharp
-    const thumbnailBuffer = await sharp(originalFilePath)
-      .resize(200, 200) // Resize to 200x200 or any size you prefer
-      .toBuffer();
-
+    // 2. Generate a thumbnail using ImageMagick (gm)
     const thumbnailFileName = `thumbnail_${originalFileName}`;
-    const thumbnailImagePath = await uploadToS3(thumbnailBuffer, thumbnailFileName, mimeType);
+    const thumbnailFilePath = path.join(UPLOADS_DIR, thumbnailFileName);
 
-    // 3. Save both image paths to the database
-    const sql = 'INSERT INTO user_images (user_id, image_path, thumbnail_path) VALUES (?, ?, ?)';
-    db.query(sql, [req.userId, originalImagePath, thumbnailImagePath], (err) => {
-      if (err) {
-        return res.status(500).json({ message: 'Database error' });
-      }
-      res.status(200).json({
-        message: 'Image uploaded successfully',
-        image: originalImagePath,
-        thumbnail: thumbnailImagePath,
+    gm(originalFilePath)
+      .resize(200, 200)
+      .write(thumbnailFilePath, async (err) => {
+        if (err) {
+          console.error('Error generating thumbnail:', err);
+          return res.status(500).json({ message: 'Error generating thumbnail' });
+        }
+
+        // 3. Upload the thumbnail to S3
+        const thumbnailImageContent = fs.readFileSync(thumbnailFilePath);
+        const thumbnailImagePath = await uploadToS3(thumbnailImageContent, thumbnailFileName, mimeType);
+
+        // 4. Save both image paths to the database
+        const sql = 'INSERT INTO user_images (user_id, image_path, thumbnail_path) VALUES (?, ?, ?)';
+        db.query(sql, [req.userId, originalImagePath, thumbnailImagePath], (err) => {
+          if (err) {
+            return res.status(500).json({ message: 'Database error' });
+          }
+          res.status(200).json({
+            message: 'Image uploaded successfully',
+            image: originalImagePath,
+            thumbnail: thumbnailImagePath,
+          });
+        });
+
+        // Clean up: delete local files after uploading to S3
+        fs.unlinkSync(originalFilePath);
+        fs.unlinkSync(thumbnailFilePath);
       });
-    });
   } catch (error) {
     console.error('Error uploading image:', error); 
     res.status(500).json({ message: 'Internal server error' });
-  } finally {
-    // Delete the uploaded file from the local server after upload to S3
-    fs.unlinkSync(originalFilePath);
   }
 });
 
