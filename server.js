@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { S3Client } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
-const { exec } = require('child_process'); // Import exec for shell commands
+const im = require('imagemagick'); // Import imagemagick
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -150,9 +150,14 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
     // 2. Generate a thumbnail using ImageMagick (exec command)
     const thumbnailFileName = `thumbnail_${originalFileName}`;
     const thumbnailFilePath = path.join(UPLOADS_DIR, thumbnailFileName);
-
-    // Execute the ImageMagick convert command
-    exec(`convert "${originalFilePath}" -resize 200x200 "${thumbnailFilePath}"`, async (err) => {
+    
+      // Use imagemagick to resize the image
+    im.resize({
+      srcPath: originalFilePath,
+      dstPath: thumbnailFilePath,
+      width: 200, // Resizing width
+      height: 200 // Resizing height
+    }, async (err) => {
       if (err) {
         console.error('Error generating thumbnail:', err);
         return res.status(500).json({ message: 'Error generating thumbnail' });
