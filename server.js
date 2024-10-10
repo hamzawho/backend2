@@ -6,9 +6,9 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
-const gm = require('gm').subClass({ imageMagick: true }); // GraphicsMagick with ImageMagick
+const { exec } = require('child_process'); // Import exec for shell commands
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -70,51 +70,11 @@ const s3Client = new S3Client({
   },
 });
 
-app.post('/signup', async (req, res) => {
-  const { name, email, password } = req.body;
-
-  const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
-  db.query(queryEmailExists, [email], async (err, results) => {
-    if (results.length > 0) {
-      return res.status(400).json({ message: 'Email already exists' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
-    db.query(query, [name, email, hashedPassword], (err, result) => {
-      if (err) {
-        return res.status(500).json({ message: 'Database error' });
-      }
-      res.status(201).json({ message: 'User created successfully' });
-    });
-  });
-});
-
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-
-  const query = 'SELECT * FROM users WHERE email = ?';
-  db.query(query, [email], async (err, results) => {
-    if (results.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    const user = results[0];
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    const token = generateToken(user.id);
-    res.json({ token });
-  });
-});
-
 // Helper function to upload to S3
 const uploadToS3 = async (fileContent, fileName, mimeType) => {
   const uploadParams = {
     Bucket: process.env.AWS_BUCKET_NAME,
-    Key: `uploads/${fileName}`, 
+    Key: `uploads/${fileName}`,
     Body: fileContent,
     ContentType: mimeType,
   };
@@ -143,41 +103,40 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
     const originalImageContent = fs.readFileSync(originalFilePath);
     const originalImagePath = await uploadToS3(originalImageContent, originalFileName, mimeType);
 
-    // 2. Generate a thumbnail using ImageMagick (gm)
+    // 2. Generate a thumbnail using ImageMagick (exec command)
     const thumbnailFileName = `thumbnail_${originalFileName}`;
     const thumbnailFilePath = path.join(UPLOADS_DIR, thumbnailFileName);
 
-    gm(originalFilePath)
-      .resize(200, 200)
-      .write(thumbnailFilePath, async (err) => {
+    // Execute the ImageMagick convert command
+    exec(`convert "${originalFilePath}" -resize 200x200 "${thumbnailFilePath}"`, async (err) => {
+      if (err) {
+        console.error('Error generating thumbnail:', err);
+        return res.status(500).json({ message: 'Error generating thumbnail' });
+      }
+
+      // 3. Upload the thumbnail to S3
+      const thumbnailImageContent = fs.readFileSync(thumbnailFilePath);
+      const thumbnailImagePath = await uploadToS3(thumbnailImageContent, thumbnailFileName, mimeType);
+
+      // 4. Save both image paths to the database
+      const sql = 'INSERT INTO user_images (user_id, image_path, thumbnail_path) VALUES (?, ?, ?)';
+      db.query(sql, [req.userId, originalImagePath, thumbnailImagePath], (err) => {
         if (err) {
-          console.error('Error generating thumbnail:', err);
-          return res.status(500).json({ message: 'Error generating thumbnail' });
+          return res.status(500).json({ message: 'Database error' });
         }
-
-        // 3. Upload the thumbnail to S3
-        const thumbnailImageContent = fs.readFileSync(thumbnailFilePath);
-        const thumbnailImagePath = await uploadToS3(thumbnailImageContent, thumbnailFileName, mimeType);
-
-        // 4. Save both image paths to the database
-        const sql = 'INSERT INTO user_images (user_id, image_path, thumbnail_path) VALUES (?, ?, ?)';
-        db.query(sql, [req.userId, originalImagePath, thumbnailImagePath], (err) => {
-          if (err) {
-            return res.status(500).json({ message: 'Database error' });
-          }
-          res.status(200).json({
-            message: 'Image uploaded successfully',
-            image: originalImagePath,
-            thumbnail: thumbnailImagePath,
-          });
+        res.status(200).json({
+          message: 'Image uploaded successfully',
+          image: originalImagePath,
+          thumbnail: thumbnailImagePath,
         });
-
-        // Clean up: delete local files after uploading to S3
-        fs.unlinkSync(originalFilePath);
-        fs.unlinkSync(thumbnailFilePath);
       });
+
+      // Clean up: delete local files after uploading to S3
+      fs.unlinkSync(originalFilePath);
+      fs.unlinkSync(thumbnailFilePath);
+    });
   } catch (error) {
-    console.error('Error uploading image:', error); 
+    console.error('Error uploading image:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -223,5 +182,3 @@ app.delete('/delete-image/:id', authenticate, (req, res) => {
 app.listen(8083, () => {
   console.log(`Server is running on port 8083`);
 });
-
-
