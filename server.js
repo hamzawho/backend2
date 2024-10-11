@@ -147,7 +147,7 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
     const originalImageContent = fs.readFileSync(originalFilePath);
     const originalImagePath = await uploadToS3(originalImageContent, originalFileName, mimeType);
 
-    // 2. Generate a thumbnail using ImageMagick (exec command)
+    // 2. Generate a thumbnail using ImageMagick
     const thumbnailFileName = `thumbnail_${originalFileName}`;
     const thumbnailFilePath = path.join(UPLOADS_DIR, thumbnailFileName);
     
