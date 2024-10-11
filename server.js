@@ -235,8 +235,6 @@
 
 
 
-
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const mysql = require('mysql');
@@ -247,7 +245,7 @@ const fs = require('fs');
 const path = require('path');
 const { S3Client } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
-const { exec } = require('child_process'); // Import exec for running ImageMagick commands
+const { exec } = require('child_process'); // Import exec for shell commands
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -286,10 +284,12 @@ db.connect((err) => {
   console.log('Connected to database!');
 });
 
+// Generate JWT token
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '1h' });
 };
 
+// Middleware to authenticate token
 const authenticate = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ message: 'No token provided' });
@@ -313,7 +313,7 @@ const s3Client = new S3Client({
 const uploadToS3 = async (fileContent, fileName, mimeType) => {
   const uploadParams = {
     Bucket: process.env.AWS_BUCKET_NAME,
-    Key: `uploads/${fileName}`, 
+    Key: `uploads/${fileName}`,
     Body: fileContent,
     ContentType: mimeType,
   };
@@ -326,6 +326,48 @@ const uploadToS3 = async (fileContent, fileName, mimeType) => {
   await upload.done();
   return `https://${process.env.AWS_BUCKET_NAME}.s3.amazonaws.com/${uploadParams.Key}`;
 };
+
+// Signup endpoint
+app.post('/signup', async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
+  db.query(queryEmailExists, [email], async (err, results) => {
+    if (results.length > 0) {
+      return res.status(400).json({ message: 'Email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
+    db.query(query, [name, email, hashedPassword], (err, result) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error' });
+      }
+      res.status(201).json({ message: 'User created successfully' });
+    });
+  });
+});
+
+// Login endpoint
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  const query = 'SELECT * FROM users WHERE email = ?';
+  db.query(query, [email], async (err, results) => {
+    if (results.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const user = results[0];
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const token = generateToken(user.id);
+    res.json({ token });
+  });
+});
 
 // Image Upload Endpoint with Thumbnail Generation Using ImageMagick
 app.post('/upload-image', authenticate, upload.single('image'), async (req, res) => {
@@ -342,11 +384,11 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
     const originalImageContent = fs.readFileSync(originalFilePath);
     const originalImagePath = await uploadToS3(originalImageContent, originalFileName, mimeType);
 
-    // 2. Generate a thumbnail using ImageMagick (convert command)
+    // 2. Generate a thumbnail using ImageMagick (exec command)
     const thumbnailFileName = `thumbnail_${originalFileName}`;
     const thumbnailFilePath = path.join(UPLOADS_DIR, thumbnailFileName);
 
-    // Use exec to run the ImageMagick convert command
+    // Execute the ImageMagick convert command
     exec(`convert "${originalFilePath}" -resize 200x200 "${thumbnailFilePath}"`, async (err) => {
       if (err) {
         console.error('Error generating thumbnail:', err);
@@ -380,44 +422,41 @@ app.post('/upload-image', authenticate, upload.single('image'), async (req, res)
   }
 });
 
-// Login Endpoint
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-
-  const query = 'SELECT * FROM users WHERE email = ?';
-  db.query(query, [email], async (err, results) => {
-    if (results.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+// Get User Images with Thumbnail Endpoint
+app.get('/get-images', authenticate, (req, res) => {
+  const userId = req.userId;
+  const sql = 'SELECT * FROM user_images WHERE user_id = ? ORDER BY id DESC';
+  db.query(sql, [userId], (err, data) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
     }
 
-    const user = results[0];
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
+    const formattedImages = data.map(image => ({
+      id: image.id,
+      path: image.image_path,
+      thumbnail: image.thumbnail_path,
+    }));
 
-    const token = generateToken(user.id);
-    res.json({ token });
+    res.json(formattedImages);
   });
 });
 
-// Signup Endpoint
-app.post('/signup', async (req, res) => {
-  const { name, email, password } = req.body;
+// Delete Image Endpoint
+app.delete('/delete-image/:id', authenticate, (req, res) => {
+  const imageId = req.params.id;
 
-  const queryEmailExists = 'SELECT * FROM users WHERE email = ?';
-  db.query(queryEmailExists, [email], async (err, results) => {
-    if (results.length > 0) {
-      return res.status(400).json({ message: 'Email already exists' });
+  const findImageQuery = 'SELECT * FROM user_images WHERE id = ? AND user_id = ?';
+  db.query(findImageQuery, [imageId, req.userId], (err, results) => {
+    if (err || results.length === 0) {
+      return res.status(404).json({ message: 'Image not found' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
-    db.query(query, [name, email, hashedPassword], (err, result) => {
+    const deleteImageQuery = 'DELETE FROM user_images WHERE id = ?';
+    db.query(deleteImageQuery, [imageId], (err) => {
       if (err) {
         return res.status(500).json({ message: 'Database error' });
       }
-      res.status(201).json({ message: 'User created successfully' });
+      res.status(200).json({ message: 'Image deleted successfully' });
     });
   });
 });
