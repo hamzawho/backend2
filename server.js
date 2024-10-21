@@ -7,7 +7,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 // const { S3Client } = require('@aws-sdk/client-s3');
-const { Upload } = require('@aws-sdk/lib-storage');
+// const { Upload } = require('@aws-sdk/lib-storage');
 const { exec } = require('child_process'); // Import exec for shell commands
 require('dotenv').config();
 
